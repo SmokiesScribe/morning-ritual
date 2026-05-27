@@ -28,8 +28,8 @@
 -- Paste that path into the matching file path setting below.
 --
 -- Hotkeys:
+-- Space   = continue / skip current ritual phase
 -- ⌘⌥⌃R = run ritual manually
--- Esc   = skip current timer phase, with confirmation
 -- ⌘⌥⌃K = emergency stop
 -- ⌘⌥⌃D = reset today's run date
 -- ⌘⌥⌃S = test writing session launch
@@ -71,8 +71,9 @@ local config = {
     -- Timing
     -- -----------------------------------------------------
 
-    settleSeconds = 30,
+    settleSeconds = 45,
     meditationMinutes = 5,
+    meditationCompletePauseSeconds = 15,
 
     -- -----------------------------------------------------
     -- Apps and Files
@@ -95,8 +96,7 @@ local config = {
 
     affirmationApp = "Notes",
     affirmationFilePath = "",
-    affirmationNoteTitle = "Morning Affirmation",
-    affirmationDateEmoji = "☀️",
+    affirmationNoteTitle = "☀️ Morning Affirmation",
 
     -- -----------------------------------------------------
     -- PLANNING
@@ -155,15 +155,33 @@ local config = {
 -- =========================
 
 local state = {
+    ritualActive = false,
+    caffeineAssertion = nil,
+
     ritualCanvas = nil,
     ritualTimer = nil,
     completionWatcher = nil,
 
-    remainingSeconds = 0,
-    currentPhase = "settle",
+    continueHotkey = nil,
 
+    remainingSeconds = 0,
+    currentPhase = nil,
+    phaseIndex = 0,
+
+    openedAppPhase = false,
     skipDialogOpen = false,
+
+    meditationSkipped = false,
 }
+
+-- =========================
+-- Forward Declarations
+-- =========================
+
+local advanceToNextPhase
+local startRitualTimer
+local skipCurrentPhase
+local endMorningRitual
 
 -- =========================
 -- Date Helpers
@@ -189,6 +207,7 @@ local function playChime()
     local sound = hs.sound.getByName(config.chimeSound)
 
     if sound then
+        sound:volume(0.7)
         sound:play()
     end
 end
@@ -199,7 +218,6 @@ local function formatTime(seconds)
     return string.format("%02d:%02d", minutes, secs)
 end
 
--- Resize an app window to fill the usable screen without entering macOS fullscreen Space mode.
 local function fillScreenWindow(appName)
     hs.timer.doAfter(0.5, function()
         local app = hs.appfinder.appFromName(appName)
@@ -212,7 +230,6 @@ local function fillScreenWindow(appName)
 
         win:raise()
 
-        -- If the app is already in macOS fullscreen, exit that first.
         if win:isFullScreen() then
             win:setFullScreen(false)
             hs.timer.usleep(300000)
@@ -230,9 +247,6 @@ local function fillScreenWindow(appName)
     end)
 end
 
--- Opens either:
--- 1. the provided file/project path (if it exists)
--- 2. otherwise the specified app
 local function openAppOrFile(appName, filePath)
     local fileExists = filePath and filePath ~= "" and hs.fs.attributes(filePath)
 
@@ -243,6 +257,14 @@ local function openAppOrFile(appName, filePath)
     else
         print("[Morning Ritual] No app or file configured.")
     end
+end
+
+local function preventSleep()
+    hs.caffeinate.set("displayIdle", true, true)
+end
+
+local function allowSleep()
+    hs.caffeinate.set("displayIdle", false, true)
 end
 
 -- =========================
@@ -268,9 +290,34 @@ local function closeRitualScreen()
     end
 end
 
-local function emergencyStop()
+local function stopRitualHotkeys()
+    if state.continueHotkey then
+        state.continueHotkey:delete()
+        state.continueHotkey = nil
+    end
+end
+
+local function startRitualHotkeys()
+    stopRitualHotkeys()
+
+    state.continueHotkey = hs.hotkey.bind({}, "space", function()
+        skipCurrentPhase()
+    end)
+end
+
+endMorningRitual = function()
+    state.ritualActive = false
+    state.currentPhase = nil
+    state.phaseIndex = 0
+
+    allowSleep()
     closeRitualScreen()
     stopCompletionWatcher()
+    stopRitualHotkeys()
+end
+
+local function emergencyStop()
+    endMorningRitual()
     hs.alert.show("Morning ritual closed")
 end
 
@@ -291,6 +338,24 @@ end
 -- Completion Flow
 -- =========================
 
+local function showCompletionPrompt()
+    if config.offerWritingSession then
+        local button = hs.dialog.blockAlert(
+            config.completionTitle,
+            config.completionMessage,
+            config.startWritingButtonText,
+            config.doneButtonText,
+            "NSInformationalAlertStyle"
+        )
+
+        if button == config.startWritingButtonText or button == 1000 then
+            openWritingSession()
+        end
+    else
+        hs.alert.show(config.completionTitle)
+    end
+end
+
 local function startCompletionWatcher()
     stopCompletionWatcher()
 
@@ -306,60 +371,20 @@ local function startCompletionWatcher()
 
         if not affirmationVisible and not planningVisible then
             stopCompletionWatcher()
-
-            local button = hs.dialog.blockAlert(
-                config.completionTitle,
-                config.completionMessage,
-                config.startWritingButtonText,
-                config.doneButtonText,
-                "NSInformationalAlertStyle"
-            )
-
-            if config.offerWritingSession and (button == config.startWritingButtonText or button == 1000) then
-                openWritingSession()
-            end
+            showCompletionPrompt()
         end
     end)
 end
 
 -- =========================
--- Affirmation / Planning Flow
+-- Affirmation / Planning
 -- =========================
 
-local openAffirmation
-local openAppleNotesAffirmation
-
-local function openPlanningAndAffirmation()
-    if config.includePlanning then
-        openAppOrFile(config.planningApp, config.planningFilePath)
-
-        hs.timer.doAfter(0.8, function()
-            fillScreenWindow(config.planningApp)
-
-            if config.includeAffirmation then
-                hs.timer.doAfter(0.5, openAffirmation)
-            else
-                startCompletionWatcher()
-                markMorningRoutineDone()
-            end
-        end)
-    elseif config.includeAffirmation then
-        openAffirmation()
-    else
-        startCompletionWatcher()
-        markMorningRoutineDone()
-    end
-end
-
-openAppleNotesAffirmation = function()
-    local dateHeader = os.date("%A, %B %d"):gsub(" 0", " ")
-
+local function openAppleNotesAffirmation()
     local script = string.format([[
         tell application "Notes"
             activate
             set targetName to "%s"
-            set todayHeader to "%s"
-            set entryText to "<br><br>☀️<br><br><b>" & todayHeader & "</b><br><br>"
             set foundNote to missing value
 
             repeat with acc in accounts
@@ -376,33 +401,27 @@ openAppleNotesAffirmation = function()
             end repeat
 
             if foundNote is not missing value then
-                set body of foundNote to body of foundNote & entryText
                 show foundNote
             else
-                make new note at folder "Notes" with properties {name:targetName, body:entryText}
+                set foundNote to make new note at folder "Notes" with properties {name:targetName, body:""}
+                show foundNote
             end if
         end tell
-    ]], config.affirmationNoteTitle, dateHeader)
+    ]], config.affirmationNoteTitle)
 
     hs.osascript.applescript(script)
-    fillScreenWindow("Notes")
-    startCompletionWatcher()
-    markMorningRoutineDone()
 end
 
-openAffirmation = function()
+local function openAffirmation()
     if config.affirmationApp == "Notes" then
         openAppleNotesAffirmation()
     else
         openAppOrFile(config.affirmationApp, config.affirmationFilePath)
-        fillScreenWindow(config.affirmationApp)
-        startCompletionWatcher()
-        markMorningRoutineDone()
     end
 end
 
 -- =========================
--- Meditation Screen UI
+-- Ritual Screen UI
 -- =========================
 
 local function applyPhaseStyle()
@@ -429,11 +448,15 @@ local function updateCanvasText()
 end
 
 local function drawRitualScreen()
+    if state.ritualCanvas then return end
+
     local screen = hs.screen.mainScreen()
     local frame = screen:fullFrame()
 
     state.ritualCanvas = hs.canvas.new(frame)
-    state.ritualCanvas:level(hs.canvas.windowLevels.screenSaver)
+
+    -- Safer than screenSaver level while developing.
+    state.ritualCanvas:level(hs.canvas.windowLevels.floating)
     state.ritualCanvas:behavior(hs.canvas.windowBehaviors.canJoinAllSpaces)
 
     state.ritualCanvas:appendElements(
@@ -480,7 +503,7 @@ local function drawRitualScreen()
         },
         {
             type = "text",
-            text = "Esc = skip ahead   •   ⌘⌥⌃K = close ritual",
+            text = "Space = continue   •   ⌘⌥⌃K = close ritual",
             textSize = 16,
             textColor = { white = 0.46, alpha = 1 },
             textAlignment = "center",
@@ -495,67 +518,183 @@ end
 -- Ritual Phase Flow
 -- =========================
 
-local function startAffirmationPhase()
-    closeRitualScreen()
-    openPlanningAndAffirmation()
-end
+local phases = {
+    {
+        id = "settle",
+        enabled = function()
+            return config.includeSettle
+        end,
+        start = function()
+            state.currentPhase = "settle"
+            state.remainingSeconds = config.settleSeconds
 
-local function startMeditationPhase()
-    playChime()
+            drawRitualScreen()
+            updateCanvasText()
+            startRitualTimer()
+        end,
+    },
+    {
+        id = "meditate",
+        enabled = function()
+            return config.includeMeditation
+        end,
+        start = function()
+            state.currentPhase = "meditate"
+            state.remainingSeconds = config.meditationMinutes * 60
 
-    state.currentPhase = "meditate"
-    state.remainingSeconds = config.meditationMinutes * 60
+            drawRitualScreen()
+            playChime()
+            updateCanvasText()
+            startRitualTimer()
+        end,
+    },
+    {
+        id = "meditationComplete",
+        enabled = function()
+            return config.includeMeditation and not state.meditationSkipped
+        end,
+        start = function()
+            state.currentPhase = "meditationComplete"
+            state.remainingSeconds = 0
 
-    updateCanvasText()
-end
+            playChime()
+            drawRitualScreen()
 
-local function skipCurrentPhase()
-    if not state.ritualCanvas then return end
+            state.ritualCanvas["background"].fillColor = { red = 0.035, green = 0.065, blue = 0.05, alpha = 1 }
+            state.ritualCanvas["orb"].fillColor = { red = 0.95, green = 0.82, blue = 0.38, alpha = 0.12 }
+            state.ritualCanvas["titleText"].text = "Meditation complete"
+            state.ritualCanvas["timerText"].text = "Take a deep breath."
+            state.ritualCanvas["bodyText"].text = "Press Space to continue."
 
-    if state.currentPhase == "settle" then
-        startMeditationPhase()
-    elseif state.currentPhase == "meditate" then
-        playChime()
-        startAffirmationPhase()
+            hs.timer.doAfter(config.meditationCompletePauseSeconds, function()
+                if state.ritualActive and state.currentPhase == "meditationComplete" then
+                    advanceToNextPhase()
+                end
+            end)
+        end,
+    },
+    {
+        id = "planning",
+        enabled = function()
+            return config.includePlanning
+        end,
+        start = function()
+            state.currentPhase = "planning"
+            state.openedAppPhase = true
+
+            closeRitualScreen()
+            openAppOrFile(config.planningApp, config.planningFilePath)
+
+            hs.timer.doAfter(0.8, advanceToNextPhase)
+        end,
+    },
+    {
+        id = "affirmation",
+        enabled = function()
+            return config.includeAffirmation
+        end,
+        start = function()
+            state.currentPhase = "affirmation"
+            state.openedAppPhase = true
+
+            closeRitualScreen()
+            openAffirmation()
+
+            hs.timer.doAfter(0.8, advanceToNextPhase)
+        end,
+    },
+}
+
+local function finishMorningRitual()
+    local openedAppPhase = state.openedAppPhase
+
+    markMorningRoutineDone()
+    endMorningRitual()
+
+    if openedAppPhase then
+        startCompletionWatcher()
+    else
+        showCompletionPrompt()
     end
 end
 
-local function startRitualTimer()
+advanceToNextPhase = function()
+    if not state.ritualActive then return end
+
+    state.phaseIndex = state.phaseIndex + 1
+
+    while state.phaseIndex <= #phases do
+        local phase = phases[state.phaseIndex]
+
+        if phase.enabled() then
+            phase.start()
+            return
+        end
+
+        state.phaseIndex = state.phaseIndex + 1
+    end
+
+    finishMorningRitual()
+end
+
+skipCurrentPhase = function()
+    if not state.ritualActive then return end
+
+    if state.currentPhase == "meditate" then
+        if state.skipDialogOpen then return end
+
+        state.skipDialogOpen = true
+
+        local button = hs.dialog.blockAlert(
+            "Skip meditation?",
+            "Choose intentionally.",
+            "Keep meditating",
+            "Skip",
+            "NSInformationalAlertStyle"
+        )
+
+        state.skipDialogOpen = false
+
+        if button ~= "Skip" then
+            return
+        end
+
+        state.meditationSkipped = true
+    end
+
+    advanceToNextPhase()
+end
+
+startRitualTimer = function()
+    if state.ritualTimer then
+        state.ritualTimer:stop()
+        state.ritualTimer = nil
+    end
+
     state.ritualTimer = hs.timer.doEvery(1, function()
         state.remainingSeconds = state.remainingSeconds - 1
         updateCanvasText()
 
         if state.remainingSeconds <= 0 then
-            if state.currentPhase == "settle" then
-                startMeditationPhase()
-            elseif state.currentPhase == "meditate" then
-                playChime()
-                startAffirmationPhase()
-            end
+            state.ritualTimer:stop()
+            state.ritualTimer = nil
+            advanceToNextPhase()
         end
     end)
 end
 
 local function startMorningRitual()
-    closeRitualScreen()
-    stopCompletionWatcher()
+    endMorningRitual()
 
-    if config.includeSettle then
-        state.currentPhase = "settle"
-        state.remainingSeconds = config.settleSeconds
-        drawRitualScreen()
-        updateCanvasText()
-        startRitualTimer()
-    elseif config.includeMeditation then
-        state.currentPhase = "meditate"
-        state.remainingSeconds = config.meditationMinutes * 60
-        drawRitualScreen()
-        updateCanvasText()
-        playChime()
-        startRitualTimer()
-    else
-        openPlanningAndAffirmation()
-    end
+    state.ritualActive = true
+    state.phaseIndex = 0
+    state.openedAppPhase = false
+    state.skipDialogOpen = false
+    state.meditationSkipped = false
+
+    preventSleep()
+    startRitualHotkeys()
+    advanceToNextPhase()
 end
 
 local function runMorningRoutine(force)
@@ -577,39 +716,12 @@ end)
 caffeineWatcher:start()
 
 -- =========================
--- Hotkeys
+-- Permanent Hotkeys
 -- =========================
+-- These are allowed to exist outside the ritual lifecycle.
 
 hs.hotkey.bind(config.hotkeyMods, "R", function()
     runMorningRoutine(config.manualAlwaysRuns)
-end)
-
-hs.hotkey.bind({}, "escape", function()
-    if not state.ritualCanvas then return end
-    if state.skipDialogOpen then return end
-
-    state.skipDialogOpen = true
-
-    -- Lower the fullscreen canvas briefly so the confirmation dialog appears above it.
-    state.ritualCanvas:level(hs.canvas.windowLevels.modalPanel - 1)
-
-    local button = hs.dialog.blockAlert(
-        "Skip this part?",
-        "Choose intentionally.",
-        "Keep going",
-        "Skip",
-        "NSInformationalAlertStyle"
-    )
-
-    if state.ritualCanvas then
-        state.ritualCanvas:level(hs.canvas.windowLevels.screenSaver)
-    end
-
-    state.skipDialogOpen = false
-
-    if button == "Skip" then
-        skipCurrentPhase()
-    end
 end)
 
 hs.hotkey.bind(config.hotkeyMods, "K", function()
