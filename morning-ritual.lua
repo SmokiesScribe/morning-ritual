@@ -114,7 +114,7 @@ local config = {
     -- -----------------------------------------------------
 
     writingApp = "Scrivener",
-    writingProjectPath = "/Users/torigriffin/Library/CloudStorage/OneDrive-Personal/WRITING/Novels/Holler Born/Holler Born.scriv",
+    writingProjectPath = "",
     writingSuccessMessage = "You are a writer.",
 
     -- -----------------------------------------------------
