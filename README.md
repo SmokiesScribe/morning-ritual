@@ -2,6 +2,8 @@
 
 A morning automation for macOS using Hammerspoon.
 
+Current version: 1.0.0
+
 Morning Ritual creates a calm transition into meaningful work by guiding you through optional phases:
 
 - settling in
@@ -21,7 +23,7 @@ The goal is to reduce friction and encourage intentional, positive habits.
 - Optional writing-session launch
 - Support for apps OR files/projects
 - Apple Notes integration with dated entries
-- Wake-triggered automation
+- Automatically runs after your Mac wakes
 - Manual trigger hotkey
 - Fully configurable
 
@@ -98,11 +100,13 @@ not:
 
 ## 4. Paste the Morning Ritual Script
 
+Download the zip file from this repository.
+
 Open `init.lua`.
 
 Delete any existing text.
 
-Paste the Morning Ritual script into the file.
+Copy the contents of `morning-ritual.lua` into `init.lua`
 
 Save the file.
 
@@ -339,6 +343,16 @@ Released under the MIT License. See `LICENSE` for details.
 
 Created by Victoria Griffin  
 Writing Woods — https://writingwoods.com
+
+If Morning Ritual has been meaningful or useful to you:
+https://writingwoods.com/support
+
+---
+
+# Changelog
+
+1.0.0 - May 20, 2026
+- Initial Release
 
                                                                    
                               *=-=*@@                              
