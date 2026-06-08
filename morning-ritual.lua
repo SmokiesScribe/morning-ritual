@@ -114,7 +114,7 @@ local config = {
     -- -----------------------------------------------------
 
     writingApp = "Scrivener",
-    writingProjectPath = "",
+    writingProjectPath = "/Users/torigriffin/Library/CloudStorage/OneDrive-Personal/WRITING/Novels/Holler Born/Holler Born.scriv",
     writingSuccessMessage = "You are a writer.",
 
     -- -----------------------------------------------------
@@ -707,7 +707,12 @@ end
 -- Wake Watcher
 -- =========================
 
-local caffeineWatcher = hs.caffeinate.watcher.new(function(event)
+if caffeineWatcher then
+    caffeineWatcher:stop()
+    caffeineWatcher = nil
+end
+
+caffeineWatcher = hs.caffeinate.watcher.new(function(event)
     if event == hs.caffeinate.watcher.systemDidWake then
         runMorningRoutine(false)
     end
