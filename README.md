@@ -2,7 +2,7 @@
 
 A morning automation for macOS using Hammerspoon.
 
-Current version: 1.0.0
+Current version: 1.0.1
 
 Morning Ritual creates a calm transition into meaningful work by guiding you through optional phases:
 
@@ -350,6 +350,9 @@ https://writingwoods.com/support
 ---
 
 # Changelog
+
+1.0.1 - June 8, 2026
+- Prevent caffeine watcher from going stale
 
 1.0.0 - May 20, 2026
 - Initial Release
